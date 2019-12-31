@@ -1,10 +1,13 @@
+from django.db import transaction
 import datetime
 import hashlib
 import logging
 import os
 import re
+import time
 import uuid
 
+from operator import itemgetter
 from django.conf import settings
 from django.utils import timezone
 from paperless.db import GnuPG
@@ -22,41 +25,45 @@ class ConsumerError(Exception):
     pass
 
 
-class Consumer(object):
+class Consumer:
     """
     Loop over every file found in CONSUMPTION_DIR and:
       1. Convert it to a greyscale pnm
       2. Use tesseract on the pnm
-      3. Encrypt and store the document in the MEDIA_ROOT
+      3. Store the document in the MEDIA_ROOT with optional encryption
       4. Store the OCR'd text in the database
       5. Delete the document and image(s)
     """
 
-    SCRATCH = settings.SCRATCH_DIR
-    CONSUME = settings.CONSUMPTION_DIR
+    # Files are considered ready for consumption if they have been unmodified
+    # for this duration
+    FILES_MIN_UNMODIFIED_DURATION = 0.5
 
-    def __init__(self):
+    def __init__(self, consume=settings.CONSUMPTION_DIR,
+                 scratch=settings.SCRATCH_DIR):
 
         self.logger = logging.getLogger(__name__)
         self.logging_group = None
 
-        try:
-            os.makedirs(self.SCRATCH)
-        except FileExistsError:
-            pass
-
-        self.stats = {}
         self._ignore = []
+        self.consume = consume
+        self.scratch = scratch
 
-        if not self.CONSUME:
+        os.makedirs(self.scratch, exist_ok=True)
+
+        self.storage_type = Document.STORAGE_TYPE_UNENCRYPTED
+        if settings.PASSPHRASE:
+            self.storage_type = Document.STORAGE_TYPE_GPG
+
+        if not self.consume:
             raise ConsumerError(
                 "The CONSUMPTION_DIR settings variable does not appear to be "
                 "set."
             )
 
-        if not os.path.exists(self.CONSUME):
+        if not os.path.exists(self.consume):
             raise ConsumerError(
-                "Consumption directory {} does not exist".format(self.CONSUME))
+                "Consumption directory {} does not exist".format(self.consume))
 
         self.parsers = []
         for response in document_consumer_declaration.send(self):
@@ -73,81 +80,102 @@ class Consumer(object):
             "group": self.logging_group
         })
 
-    def consume(self):
+    def consume_new_files(self):
+        """
+        Find non-ignored files in consumption dir and consume them if they have
+        been unmodified for FILES_MIN_UNMODIFIED_DURATION.
+        """
+        ignored_files = []
+        files = []
+        for entry in os.scandir(self.consume):
+            if entry.is_file():
+                file = (entry.path, entry.stat().st_mtime)
+                if file in self._ignore:
+                    ignored_files.append(file)
+                else:
+                    files.append(file)
 
-        for doc in os.listdir(self.CONSUME):
+        if not files:
+            return
 
-            doc = os.path.join(self.CONSUME, doc)
+        # Set _ignore to only include files that still exist.
+        # This keeps it from growing indefinitely.
+        self._ignore[:] = ignored_files
 
-            if not os.path.isfile(doc):
-                continue
+        files_old_to_new = sorted(files, key=itemgetter(1))
 
-            if not re.match(FileInfo.REGEXES["title"], doc):
-                continue
+        time.sleep(self.FILES_MIN_UNMODIFIED_DURATION)
 
-            if doc in self._ignore:
-                continue
+        for file, mtime in files_old_to_new:
+            if mtime == os.path.getmtime(file):
+                # File has not been modified and can be consumed
+                if not self.try_consume_file(file):
+                    self._ignore.append((file, mtime))
 
-            if not self._is_ready(doc):
-                continue
+    @transaction.atomic
+    def try_consume_file(self, file):
+        """
+        Return True if file was consumed
+        """
 
-            if self._is_duplicate(doc):
-                self.log(
-                    "info",
-                    "Skipping {} as it appears to be a duplicate".format(doc)
-                )
-                self._ignore.append(doc)
-                continue
+        if not re.match(FileInfo.REGEXES["title"], file):
+            return False
 
-            parser_class = self._get_parser_class(doc)
-            if not parser_class:
-                self.log(
-                    "error", "No parsers could be found for {}".format(doc))
-                self._ignore.append(doc)
-                continue
+        doc = file
 
-            self.logging_group = uuid.uuid4()
+        if self._is_duplicate(doc):
+            self.log(
+                "info",
+                "Skipping {} as it appears to be a duplicate".format(doc)
+            )
+            return False
 
-            self.log("info", "Consuming {}".format(doc))
+        parser_class = self._get_parser_class(doc)
+        if not parser_class:
+            self.log(
+                "error", "No parsers could be found for {}".format(doc))
+            return False
 
-            document_consumption_started.send(
-                sender=self.__class__,
-                filename=doc,
-                logging_group=self.logging_group
+        self.logging_group = uuid.uuid4()
+
+        self.log("info", "Consuming {}".format(doc))
+
+        document_consumption_started.send(
+            sender=self.__class__,
+            filename=doc,
+            logging_group=self.logging_group
+        )
+
+        parsed_document = parser_class(doc)
+
+        try:
+            thumbnail = parsed_document.get_optimised_thumbnail()
+            date = parsed_document.get_date()
+            document = self._store(
+                parsed_document.get_text(),
+                doc,
+                thumbnail,
+                date
+            )
+        except ParseError as e:
+            self.log("error", "PARSE FAILURE for {}: {}".format(doc, e))
+            parsed_document.cleanup()
+            return False
+        else:
+            parsed_document.cleanup()
+            self._cleanup_doc(doc)
+
+            self.log(
+                "info",
+                "Document {} consumption finished".format(document)
             )
 
-            parsed_document = parser_class(doc)
-            thumbnail = parsed_document.get_thumbnail()
-
-            try:
-                document = self._store(
-                    parsed_document.get_text(),
-                    doc,
-                    thumbnail
-                )
-            except ParseError as e:
-
-                self._ignore.append(doc)
-                self.log("error", "PARSE FAILURE for {}: {}".format(doc, e))
-                parsed_document.cleanup()
-
-                continue
-
-            else:
-
-                parsed_document.cleanup()
-                self._cleanup_doc(doc)
-
-                self.log(
-                    "info",
-                    "Document {} consumption finished".format(document)
-                )
-
-                document_consumption_finished.send(
-                    sender=self.__class__,
-                    document=document,
-                    logging_group=self.logging_group
-                )
+            document_consumption_finished.send(
+                sender=self.__class__,
+                document=document,
+                logging_group=self.logging_group
+            )
+            return True
 
     def _get_parser_class(self, doc):
         """
@@ -174,7 +202,7 @@ class Consumer(object):
         return sorted(
             options, key=lambda _: _["weight"], reverse=True)[0]["parser"]
 
-    def _store(self, text, doc, thumbnail):
+    def _store(self, text, doc, thumbnail, date):
 
         file_info = FileInfo.from_path(doc)
 
@@ -182,7 +210,7 @@ class Consumer(object):
 
         self.log("debug", "Saving record to database")
 
-        created = file_info.created or timezone.make_aware(
+        created = file_info.created or date or timezone.make_aware(
                     datetime.datetime.fromtimestamp(stats.st_mtime))
 
         with open(doc, "rb") as f:
@@ -193,7 +221,8 @@ class Consumer(object):
                 file_type=file_info.extension,
                 checksum=hashlib.md5(f.read()).hexdigest(),
                 created=created,
-                modified=created
+                modified=created,
+                storage_type=self.storage_type
             )
 
         relevant_tags = set(list(Tag.match_all(text)) + list(file_info.tags))
@@ -202,41 +231,25 @@ class Consumer(object):
             self.log("debug", "Tagging with {}".format(tag_names))
             document.tags.add(*relevant_tags)
 
-        # Encrypt and store the actual document
-        with open(doc, "rb") as unencrypted:
-            with open(document.source_path, "wb") as encrypted:
-                self.log("debug", "Encrypting the document")
-                encrypted.write(GnuPG.encrypted(unencrypted))
-
-        # Encrypt and store the thumbnail
-        with open(thumbnail, "rb") as unencrypted:
-            with open(document.thumbnail_path, "wb") as encrypted:
-                self.log("debug", "Encrypting the thumbnail")
-                encrypted.write(GnuPG.encrypted(unencrypted))
+        self._write(document, doc, document.source_path)
+        self._write(document, thumbnail, document.thumbnail_path)
 
         self.log("info", "Completed")
 
         return document
 
+    def _write(self, document, source, target):
+        with open(source, "rb") as read_file:
+            with open(target, "wb") as write_file:
+                if document.storage_type == Document.STORAGE_TYPE_UNENCRYPTED:
+                    write_file.write(read_file.read())
+                    return
+                self.log("debug", "Encrypting")
+                write_file.write(GnuPG.encrypted(read_file))
+
     def _cleanup_doc(self, doc):
         self.log("debug", "Deleting document {}".format(doc))
         os.unlink(doc)
-
-    def _is_ready(self, doc):
-        """
-        Detect whether `doc` is ready to consume or if it's still being written
-        to by the uploader.
-        """
-
-        t = os.stat(doc).st_mtime
-
-        if self.stats.get(doc) == t:
-            del(self.stats[doc])
-            return True
-
-        self.stats[doc] = t
-
-        return False
 
     @staticmethod
     def _is_duplicate(doc):

@@ -13,7 +13,6 @@ from dateutil import parser
 
 from django.conf import settings
 
-from .consumer import Consumer
 from .models import Correspondent
 
 
@@ -21,7 +20,7 @@ class MailFetcherError(Exception):
     pass
 
 
-class InvalidMessageError(Exception):
+class InvalidMessageError(MailFetcherError):
     pass
 
 
@@ -43,10 +42,7 @@ class Message(Loggable):
     and n attachments, and that we don't care about the message body.
     """
 
-    SECRET = os.getenv(
-        "PAPERLESS_EMAIL_SECRET",
-        os.getenv("PAPERLESS_SHARED_SECRET")  # TODO: Remove after 2017/09
-    )
+    SECRET = os.getenv("PAPERLESS_EMAIL_SECRET")
 
     def __init__(self, data, group=None):
         """
@@ -79,6 +75,9 @@ class Message(Loggable):
                 continue
 
             dispositions = content_disposition.strip().split(";")
+            if len(dispositions) < 2:
+                continue
+
             if not dispositions[0].lower() == "attachment" and \
                "filename" not in dispositions[1].lower():
                 continue
@@ -151,7 +150,7 @@ class Attachment(object):
 
 class MailFetcher(Loggable):
 
-    def __init__(self):
+    def __init__(self, consume=settings.CONSUMPTION_DIR):
 
         Loggable.__init__(self)
 
@@ -163,8 +162,11 @@ class MailFetcher(Loggable):
         self._inbox = os.getenv("PAPERLESS_CONSUME_MAIL_INBOX", "INBOX")
 
         self._enabled = bool(self._host)
+        if self._enabled and Message.SECRET is None:
+            raise MailFetcherError("No PAPERLESS_EMAIL_SECRET defined")
 
-        self.last_checked = datetime.datetime.now()
+        self.last_checked = time.time()
+        self.consume = consume
 
     def pull(self):
         """
@@ -185,12 +187,12 @@ class MailFetcher(Loggable):
                 self.log("info", 'Storing email: "{}"'.format(message.subject))
 
                 t = int(time.mktime(message.time.timetuple()))
-                file_name = os.path.join(Consumer.CONSUME, message.file_name)
+                file_name = os.path.join(self.consume, message.file_name)
                 with open(file_name, "wb") as f:
                     f.write(message.attachment.data)
                     os.utime(file_name, times=(t, t))
 
-        self.last_checked = datetime.datetime.now()
+        self.last_checked = time.time()
 
     def _get_messages(self):
 
@@ -208,13 +210,17 @@ class MailFetcher(Loggable):
             self._connection.close()
             self._connection.logout()
 
-        except Exception as e:
+        except MailFetcherError as e:
             self.log("error", str(e))
 
         return r
 
     def _connect(self):
-        self._connection = imaplib.IMAP4_SSL(self._host, self._port)
+        try:
+            self._connection = imaplib.IMAP4_SSL(self._host, self._port)
+        except OSError as e:
+            msg = "Problem connecting to {}: {}".format(self._host, e.strerror)
+            raise MailFetcherError(msg)
 
     def _login(self):
 

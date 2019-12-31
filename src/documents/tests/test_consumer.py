@@ -1,8 +1,11 @@
+import re
+
 from django.test import TestCase
 from unittest import mock
+from tempfile import TemporaryDirectory
 
 from ..consumer import Consumer
-from ..models import FileInfo
+from ..models import FileInfo, Tag
 
 
 class TestConsumer(TestCase):
@@ -16,7 +19,6 @@ class TestConsumer(TestCase):
             self.DummyParser
         )
 
-    @mock.patch("documents.consumer.Consumer.CONSUME")
     @mock.patch("documents.consumer.os.makedirs")
     @mock.patch("documents.consumer.os.path.exists", return_value=True)
     @mock.patch("documents.consumer.document_consumer_declaration.send")
@@ -32,18 +34,22 @@ class TestConsumer(TestCase):
             (None, lambda _: {"weight": 0, "parser": DummyParser1}),
             (None, lambda _: {"weight": 1, "parser": DummyParser2}),
         )
+        with TemporaryDirectory() as tmpdir:
+            self.assertEqual(
+                Consumer(consume=tmpdir)._get_parser_class("doc.pdf"),
+                DummyParser2
+            )
 
-        self.assertEqual(Consumer()._get_parser_class("doc.pdf"), DummyParser2)
-
-    @mock.patch("documents.consumer.Consumer.CONSUME")
     @mock.patch("documents.consumer.os.makedirs")
     @mock.patch("documents.consumer.os.path.exists", return_value=True)
     @mock.patch("documents.consumer.document_consumer_declaration.send")
     def test__get_parser_class_0_parsers(self, m, *args):
         m.return_value = ((None, lambda _: None),)
-        self.assertIsNone(Consumer()._get_parser_class("doc.pdf"))
+        with TemporaryDirectory() as tmpdir:
+            self.assertIsNone(
+                Consumer(consume=tmpdir)._get_parser_class("doc.pdf")
+            )
 
-    @mock.patch("documents.consumer.Consumer.CONSUME")
     @mock.patch("documents.consumer.os.makedirs")
     @mock.patch("documents.consumer.os.path.exists", return_value=True)
     @mock.patch("documents.consumer.document_consumer_declaration.send")
@@ -51,7 +57,8 @@ class TestConsumer(TestCase):
         m.return_value = (
             (None, lambda _: {"weight": 0, "parser": self.DummyParser}),
         )
-        return Consumer()
+        with TemporaryDirectory() as tmpdir:
+            return Consumer(consume=tmpdir)
 
 
 class TestAttributes(TestCase):
@@ -185,6 +192,20 @@ class TestAttributes(TestCase):
             ()
         )
 
+    def test_case_insensitive_tag_creation(self):
+        """
+        Tags should be detected and created as lower case.
+        :return:
+        """
+
+        path = "Title - Correspondent - tAg1,TAG2.pdf"
+        self.assertEqual(len(FileInfo.from_path(path).tags), 2)
+
+        path = "Title - Correspondent - tag1,tag2.pdf"
+        self.assertEqual(len(FileInfo.from_path(path).tags), 2)
+
+        self.assertEqual(Tag.objects.all().count(), 2)
+
 
 class TestFieldPermutations(TestCase):
 
@@ -271,11 +292,13 @@ class TestFieldPermutations(TestCase):
 
     def test_created_and_correspondent_and_title_and_tags(self):
 
-        template = ("/path/to/{created} - "
-                    "{correspondent} - "
-                    "{title} - "
-                    "{tags}"
-                    ".{extension}")
+        template = (
+            "/path/to/{created} - "
+            "{correspondent} - "
+            "{title} - "
+            "{tags}"
+            ".{extension}"
+        )
 
         for created in self.valid_dates:
             for correspondent in self.valid_correspondents:
@@ -294,10 +317,7 @@ class TestFieldPermutations(TestCase):
 
     def test_created_and_correspondent_and_title(self):
 
-        template = ("/path/to/{created} - "
-                    "{correspondent} - "
-                    "{title}"
-                    ".{extension}")
+        template = "/path/to/{created} - {correspondent} - {title}.{extension}"
 
         for created in self.valid_dates:
             for correspondent in self.valid_correspondents:
@@ -320,9 +340,7 @@ class TestFieldPermutations(TestCase):
 
     def test_created_and_title(self):
 
-        template = ("/path/to/{created} - "
-                    "{title}"
-                    ".{extension}")
+        template = "/path/to/{created} - {title}.{extension}"
 
         for created in self.valid_dates:
             for title in self.valid_titles:
@@ -337,10 +355,7 @@ class TestFieldPermutations(TestCase):
 
     def test_created_and_title_and_tags(self):
 
-        template = ("/path/to/{created} - "
-                    "{title} - "
-                    "{tags}"
-                    ".{extension}")
+        template = "/path/to/{created} - {title} - {tags}.{extension}"
 
         for created in self.valid_dates:
             for title in self.valid_titles:
@@ -354,3 +369,84 @@ class TestFieldPermutations(TestCase):
                         }
                         self._test_guessed_attributes(
                             template.format(**spec), **spec)
+
+    def test_invalid_date_format(self):
+        info = FileInfo.from_path("/path/to/06112017Z - title.pdf")
+        self.assertEqual(info.title, "title")
+        self.assertIsNone(info.created)
+
+    def test_filename_parse_transforms(self):
+
+        path = "/some/path/to/tag1,tag2_20190908_180610_0001.pdf"
+        all_patt = re.compile("^.*$")
+        none_patt = re.compile("$a")
+        exact_patt = re.compile("^([a-z0-9,]+)_(\\d{8})_(\\d{6})_([0-9]+)\\.")
+        repl1 = " - \\4 - \\1."    # (empty) corrspondent, title and tags
+        repl2 = "\\2Z - " + repl1  # creation date + repl1
+
+        # No transformations configured (= default)
+        info = FileInfo.from_path(path)
+        self.assertEqual(info.title, "tag1,tag2_20190908_180610_0001")
+        self.assertEqual(info.extension, "pdf")
+        self.assertEqual(info.tags, ())
+        self.assertIsNone(info.created)
+
+        # Pattern doesn't match (filename unaltered)
+        with self.settings(
+                FILENAME_PARSE_TRANSFORMS=[(none_patt, "none.gif")]):
+            info = FileInfo.from_path(path)
+            self.assertEqual(info.title, "tag1,tag2_20190908_180610_0001")
+            self.assertEqual(info.extension, "pdf")
+
+        # Simple transformation (match all)
+        with self.settings(
+                FILENAME_PARSE_TRANSFORMS=[(all_patt, "all.gif")]):
+            info = FileInfo.from_path(path)
+            self.assertEqual(info.title, "all")
+            self.assertEqual(info.extension, "gif")
+
+        # Multiple transformations configured (first pattern matches)
+        with self.settings(
+                FILENAME_PARSE_TRANSFORMS=[
+                    (all_patt, "all.gif"),
+                    (all_patt, "anotherall.gif")]):
+            info = FileInfo.from_path(path)
+            self.assertEqual(info.title, "all")
+            self.assertEqual(info.extension, "gif")
+
+        # Multiple transformations configured (second pattern matches)
+        with self.settings(
+                FILENAME_PARSE_TRANSFORMS=[
+                    (none_patt, "none.gif"),
+                    (all_patt, "anotherall.gif")]):
+            info = FileInfo.from_path(path)
+            self.assertEqual(info.title, "anotherall")
+            self.assertEqual(info.extension, "gif")
+
+        # Complex transformation without date in replacement string
+        with self.settings(
+                FILENAME_PARSE_TRANSFORMS=[(exact_patt, repl1)]):
+            info = FileInfo.from_path(path)
+            self.assertEqual(info.title, "0001")
+            self.assertEqual(info.extension, "pdf")
+            self.assertEqual(len(info.tags), 2)
+            self.assertEqual(info.tags[0].slug, "tag1")
+            self.assertEqual(info.tags[1].slug, "tag2")
+            self.assertIsNone(info.created)
+
+        # Complex transformation with date in replacement string
+        with self.settings(
+            FILENAME_PARSE_TRANSFORMS=[
+                (none_patt, "none.gif"),
+                (exact_patt, repl2),    # <-- matches
+                (exact_patt, repl1),
+                (all_patt, "all.gif")]):
+            info = FileInfo.from_path(path)
+            self.assertEqual(info.title, "0001")
+            self.assertEqual(info.extension, "pdf")
+            self.assertEqual(len(info.tags), 2)
+            self.assertEqual(info.tags[0].slug, "tag1")
+            self.assertEqual(info.tags[1].slug, "tag2")
+            self.assertEqual(info.created.year, 2019)
+            self.assertEqual(info.created.month, 9)
+            self.assertEqual(info.created.day, 8)

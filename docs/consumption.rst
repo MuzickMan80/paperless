@@ -17,7 +17,8 @@ The primary method of getting documents into your database is by putting them in
 the consumption directory.  The ``document_consumer`` script runs in an infinite
 loop looking for new additions to this directory and when it finds them, it goes
 about the process of parsing them with the OCR, indexing what it finds, and
-encrypting the PDF, storing it in the media directory.
+encrypting the PDF (if ``PAPERLESS_PASSPHRASE`` is set), storing it in the
+media directory.
 
 Getting stuff into this directory is up to you.  If you're running Paperless
 on your local computer, you might just want to drag and drop files there, but if
@@ -74,6 +75,31 @@ Pre-consumption script
 ::::::::::::::::::::::
 
 * Document file name
+
+A simple but common example for this would be creating a simple script like
+this:
+
+``/usr/local/bin/ocr-pdf``
+
+.. code:: bash
+
+    #!/usr/bin/env bash
+    pdf2pdfocr.py -i ${1}
+
+``/etc/paperless.conf``
+
+.. code:: bash
+
+    ...
+    PAPERLESS_PRE_CONSUME_SCRIPT="/usr/local/bin/ocr-pdf"
+    ...
+
+This will pass the path to the document about to be consumed to ``/usr/local/bin/ocr-pdf``,
+which will in turn call `pdf2pdfocr.py`_ on your document, which will then
+overwrite the file with an OCR'd version of the file and exit.  At which point,
+the consumption process will begin with the newly modified file.
+
+.. _pdf2pdfocr.py: https://github.com/LeoFCardoso/pdf2pdfocr
 
 
 .. _consumption-director-hook-variables-post:

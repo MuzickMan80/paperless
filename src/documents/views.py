@@ -1,6 +1,9 @@
 from django.http import HttpResponse, HttpResponseBadRequest
 from django.views.generic import DetailView, FormView, TemplateView
 from django_filters.rest_framework import DjangoFilterBackend
+from django.conf import settings
+from django.utils import cache
+
 from paperless.db import GnuPG
 from paperless.mixins import SessionOrBasicAuthMixin
 from paperless.views import StandardPagination
@@ -30,14 +33,7 @@ from .serialisers import (
 
 
 class IndexView(TemplateView):
-
     template_name = "documents/index.html"
-
-    def get_context_data(self, **kwargs):
-        print(kwargs)
-        print(self.request.GET)
-        print(self.request.POST)
-        return TemplateView.get_context_data(self, **kwargs)
 
 
 class FetchView(SessionOrBasicAuthMixin, DetailView):
@@ -55,22 +51,35 @@ class FetchView(SessionOrBasicAuthMixin, DetailView):
             Document.TYPE_JPG: "image/jpeg",
             Document.TYPE_GIF: "image/gif",
             Document.TYPE_TIF: "image/tiff",
+            Document.TYPE_CSV: "text/csv",
+            Document.TYPE_MD:  "text/markdown",
+            Document.TYPE_TXT: "text/plain"
         }
 
         if self.kwargs["kind"] == "thumb":
-            return HttpResponse(
-                GnuPG.decrypted(self.object.thumbnail_file),
+            response = HttpResponse(
+                self._get_raw_data(self.object.thumbnail_file),
                 content_type=content_types[Document.TYPE_PNG]
             )
+            cache.patch_cache_control(response, max_age=31536000, private=True)
+            return response
 
         response = HttpResponse(
-            GnuPG.decrypted(self.object.source_file),
+            self._get_raw_data(self.object.source_file),
             content_type=content_types[self.object.file_type]
         )
-        response["Content-Disposition"] = 'attachment; filename="{}"'.format(
-            self.object.file_name)
+
+        DISPOSITION = 'inline' if settings.INLINE_DOC else 'attachment'
+
+        response["Content-Disposition"] = '{}; filename="{}"'.format(
+            DISPOSITION, self.object.file_name)
 
         return response
+
+    def _get_raw_data(self, file_handle):
+        if self.object.storage_type == Document.STORAGE_TYPE_UNENCRYPTED:
+            return file_handle
+        return GnuPG.decrypted(file_handle)
 
 
 class PushView(SessionOrBasicAuthMixin, FormView):
@@ -124,7 +133,7 @@ class DocumentViewSet(RetrieveModelMixin,
     filter_class = DocumentFilterSet
     search_fields = ("title", "correspondent__name", "content")
     ordering_fields = (
-        "id", "title", "correspondent__name", "created", "modified")
+        "id", "title", "correspondent__name", "created", "modified", "added")
 
 
 class LogViewSet(ReadOnlyModelViewSet):

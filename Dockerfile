@@ -1,50 +1,70 @@
-FROM python:3.5
-MAINTAINER Pit Kleyersburg <pitkley@googlemail.com>
+FROM alpine:3.10
 
-# Install dependencies
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
-        sudo \
-        tesseract-ocr tesseract-ocr-eng imagemagick ghostscript unpaper \
-    && rm -rf /var/lib/apt/lists/*
+LABEL maintainer="The Paperless Project https://github.com/the-paperless-project/paperless" \
+      contributors="Guy Addadi <addadi@gmail.com>, Pit Kleyersburg <pitkley@googlemail.com>, \
+        Sven Fischer <git-dev@linux4tw.de>"
 
+# Copy Pipfiles file, init script and gunicorn.conf
+COPY Pipfile* /usr/src/paperless/
+COPY scripts/docker-entrypoint.sh /sbin/docker-entrypoint.sh
+COPY scripts/gunicorn.conf /usr/src/paperless/
+
+# Set export and consumption directories
+ENV PAPERLESS_EXPORT_DIR=/export \
+    PAPERLESS_CONSUMPTION_DIR=/consume
+
+RUN apk add --no-cache \
+      bash \
+      curl \
+      ghostscript \
+      gnupg \
+      imagemagick \
+      libmagic \
+      libpq \
+      optipng \
+      poppler \
+      python3 \
+      shadow \
+      sudo \
+      tesseract-ocr \
+      unpaper && \
+    apk add --no-cache --virtual .build-dependencies \
+      g++ \
+      gcc \
+      jpeg-dev \
+      musl-dev \
+      poppler-dev \
+      postgresql-dev \
+      python3-dev \
+      zlib-dev && \
 # Install python dependencies
-RUN mkdir -p /usr/src/paperless
-WORKDIR /usr/src/paperless
-COPY requirements.txt /usr/src/paperless/
-RUN pip install --no-cache-dir -r requirements.txt
+    python3 -m ensurepip && \
+    rm -r /usr/lib/python*/ensurepip && \
+    cd /usr/src/paperless && \
+    pip3 install --upgrade pip pipenv && \
+    pipenv install --system --deploy && \
+# Remove build dependencies
+    apk del .build-dependencies && \
+# Create the consumption directory
+    mkdir -p $PAPERLESS_CONSUMPTION_DIR && \
+# Create user
+    addgroup -g 1000 paperless && \
+    adduser -D -u 1000 -G paperless -h /usr/src/paperless paperless && \
+    chown -Rh paperless:paperless /usr/src/paperless && \
+    mkdir -p $PAPERLESS_EXPORT_DIR && \
+# Setup entrypoint
+    chmod 755 /sbin/docker-entrypoint.sh
+
+WORKDIR /usr/src/paperless/src
+# Mount volumes and set Entrypoint
+VOLUME ["/usr/src/paperless/data", "/usr/src/paperless/media", "/consume", "/export"]
+ENTRYPOINT ["/sbin/docker-entrypoint.sh"]
+CMD ["--help"]
 
 # Copy application
-RUN mkdir -p /usr/src/paperless/src
-RUN mkdir -p /usr/src/paperless/data
-RUN mkdir -p /usr/src/paperless/media
 COPY src/ /usr/src/paperless/src/
 COPY data/ /usr/src/paperless/data/
 COPY media/ /usr/src/paperless/media/
 
-# Set consumption directory
-ENV PAPERLESS_CONSUMPTION_DIR /consume
-RUN mkdir -p $PAPERLESS_CONSUMPTION_DIR
-
-# Migrate database
-WORKDIR /usr/src/paperless/src
-RUN ./manage.py migrate
-
-# Create user
-RUN groupadd -g 1000 paperless \
-    && useradd -u 1000 -g 1000 -d /usr/src/paperless paperless \
-    && chown -Rh paperless:paperless /usr/src/paperless
-
-# Set export directory
-ENV PAPERLESS_EXPORT_DIR /export
-RUN mkdir -p $PAPERLESS_EXPORT_DIR
-
-# Setup entrypoint
-COPY scripts/docker-entrypoint.sh /sbin/docker-entrypoint.sh
-RUN chmod 755 /sbin/docker-entrypoint.sh
-
-# Mount volumes
-VOLUME ["/usr/src/paperless/data", "/usr/src/paperless/media", "/consume", "/export"]
-
-ENTRYPOINT ["/sbin/docker-entrypoint.sh"]
-CMD ["--help"]
+# Collect static files
+RUN sudo -HEu paperless /usr/src/paperless/src/manage.py collectstatic --clear --no-input

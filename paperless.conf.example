@@ -29,6 +29,15 @@ PAPERLESS_CONSUMPTION_DIR=""
 #PAPERLESS_STATICDIR=""
 
 
+# Override the MEDIA_URL here.  Unless you're hosting Paperless off a subdomain
+# like /paperless/, you probably don't need to change this.
+#PAPERLESS_MEDIA_URL="/media/"
+
+# Override the STATIC_URL here.  Unless you're hosting Paperless off a
+# subdomain like /paperless/, you probably don't need to change this.
+#PAPERLESS_STATIC_URL="/static/"
+
+
 # These values are required if you want paperless to check a particular email
 # box every 10 minutes and attempt to consume documents from there.  If you
 # don't define a HOST, mail checking will just be disabled.
@@ -50,19 +59,24 @@ PAPERLESS_EMAIL_SECRET=""
 ####                              Security                                 ####
 ###############################################################################
 
-# You must have a passphrase in order for Paperless to work at all.  If you set
-# this to "", GNUGPG will "encrypt" your PDF by writing it out as a zero-byte
-# file.
-#
-# The passphrase you use here will be used when storing your documents in
-# Paperless, but you can always export them in an unencrypted format by using
-# document exporter.  See the documentation for more information.
+# Controls whether django's debug mode is enabled. Disable this on production
+# systems. Debug mode is enabled by default.
+#PAPERLESS_DEBUG="true"
+
+
+# Paperless can be instructed to attempt to encrypt your PDF files with GPG
+# using the PAPERLESS_PASSPHRASE specified below.  If however you're not
+# concerned about encrypting these files (for example if you have disk
+# encryption locally) then you don't need this and can safely leave this value
+# un-set.
 #
 # One final note about the passphrase.  Once you've consumed a document with
 # one passphrase, DON'T CHANGE IT.  Paperless assumes this to be a constant and
 # can't properly export documents that were encrypted with an old passphrase if
 # you've since changed it to a new one.
-PAPERLESS_PASSPHRASE="secret"
+#
+# The default is to not use encryption at all.
+#PAPERLESS_PASSPHRASE="secret"
 
 
 # The secret key has a default that should be fine so long as you're hosting
@@ -80,11 +94,22 @@ PAPERLESS_PASSPHRASE="secret"
 # as is "example.com,www.example.com", but NOT " example.com" or "example.com,"
 #PAPERLESS_ALLOWED_HOSTS="example.com,www.example.com"
 
+# If you decide to use the Paperless API in an ajax call, you need to add your
+# servers to the list of allowed hosts that can do CORS calls. By default
+# Paperless allows calls from localhost:8080, but you'd like to change that,
+# you can set this value to a comma-separated list.
+#PAPERLESS_CORS_ALLOWED_HOSTS="localhost:8080,example.com,localhost:8000"
+
 # To host paperless under a subpath url like example.com/paperless you set
 # this value to /paperless. No trailing slash!
 #
 # https://docs.djangoproject.com/en/1.11/ref/settings/#force-script-name
 #PAPERLESS_FORCE_SCRIPT_NAME=""
+
+# If you are using alternative authentication means or are just using paperless
+# as a single user on a small private network, this option allows you to disable
+# user authentication if you set it to "true"
+#PAPERLESS_DISABLE_LOGIN="false"
 
 ###############################################################################
 ####                          Software Tweaks                              ####
@@ -97,6 +122,35 @@ PAPERLESS_PASSPHRASE="secret"
 # http://paperless.readthedocs.org/en/latest/consumption.html#hooking-into-the-consumption-process
 #PAPERLESS_POST_CONSUME_SCRIPT="/path/to/an/arbitrary/script.sh"
 
+# By default, when clicking on a document within the web interface, the
+# browser will prompt the user to save the document to disk. By setting this to
+# "true", the document will instead be opened in the browser, if possible.
+#PAPERLESS_INLINE_DOC="false"
+
+# By default, paperless will check the document text for document date information.
+# Uncomment the line below to enable checking the document filename for date
+# information. The date order can be set to any option as specified in
+# https://dateparser.readthedocs.io/en/latest/#settings. The filename will be
+# checked first, and if nothing is found, the document text will be checked
+# as normal.
+#PAPERLESS_FILENAME_DATE_ORDER="YMD"
+
+# Sometimes devices won't create filenames which can be parsed properly
+# by the filename parser (see
+# https://paperless.readthedocs.io/en/latest/guesswork.html).
+#
+# This setting allows to specify a list of transformations
+# in regular expression syntax, which are passed in order to re.sub.
+# Transformation stops after the first match, so at most one transformation
+# is applied.
+#
+# Syntax is a JSON array of dictionaries containing "pattern" and "repl"
+# as keys.
+#
+# The example below transforms filenames created by a Brother ADS-2400N
+# document scanner in its standard configuration `Name_Date_Count', so that
+# count is used as title, name as tag and date can be parsed by paperless.
+#PAPERLESS_FILENAME_PARSE_TRANSFORMS=[{"pattern":"^([a-z]+)_(\\d{8})_(\\d{6})_([0-9]+)\\.", "repl":"\\2\\3Z - \\4 - \\1."}]
 
 #
 # The following values use sensible defaults for modern systems, but if you're
@@ -151,10 +205,23 @@ PAPERLESS_PASSPHRASE="secret"
 #PAPERLESS_CONVERT_DENSITY=300
 
 
+# (This setting is ignored on Linux where inotify is used instead of a
+# polling loop.)
 # The number of seconds that Paperless will wait between checking
 # PAPERLESS_CONSUMPTION_DIR.  If you tend to write documents to this directory
 # rarely, you may want to use a higher value than the default (10).
 #PAPERLESS_CONSUMER_LOOP_TIME=10
+
+
+# By default Paperless stops consuming a document if no language can be
+# detected. Set to true to consume documents even if the language detection
+# fails.
+#PAPERLESS_FORGIVING_OCR="false"
+
+
+# By default Paperless does not OCR a document if the text can be retrieved from
+# the document directly. Set to true to always OCR documents.
+#PAPERLESS_OCR_ALWAYS="false"
 
 
 ###############################################################################
@@ -177,3 +244,31 @@ PAPERLESS_PASSPHRASE="secret"
 # positive integer, but if you don't define one in paperless.conf, a default of
 # 100 will be used.
 #PAPERLESS_LIST_PER_PAGE=100
+
+
+# The number of years for which a correspondent will be included in the recent
+# correspondents filter.
+#PAPERLESS_RECENT_CORRESPONDENT_YEARS=1
+
+###############################################################################
+####                     Third-Party Binaries                              ####
+###############################################################################
+
+# There are a few external software packages that Paperless expects to find on
+# your system when it starts up.  Unless you've done something creative with
+# their installation, you probably won't need to edit any of these.  However,
+# if you've installed these programs somewhere where simply typing the name of
+# the program doesn't automatically execute it (ie. the program isn't in your
+# $PATH), then you'll need to specify the literal path for that program here.
+
+# Convert (part of the ImageMagick suite)
+#PAPERLESS_CONVERT_BINARY=/usr/bin/convert
+
+# Ghostscript
+#PAPERLESS_GS_BINARY = /usr/bin/gs
+
+# Unpaper
+#PAPERLESS_UNPAPER_BINARY=/usr/bin/unpaper
+
+# Optipng (for optimising thumbnail sizes)
+#PAPERLESS_OPTIPNG_BINARY=/usr/bin/optipng

@@ -11,26 +11,31 @@ should work) that has the following software installed:
 * `Tesseract`_, plus its language files matching your document base.
 * `Imagemagick`_ version 6.7.5 or higher
 * `unpaper`_
+* `libpoppler-cpp-dev`_ PDF rendering library
+* `optipng`_
 
 .. _Python3: https://python.org/
 .. _GNU Privacy Guard: https://gnupg.org
 .. _Tesseract: https://github.com/tesseract-ocr
 .. _Imagemagick: http://imagemagick.org/
 .. _unpaper: https://www.flameeyes.eu/projects/unpaper
+.. _libpoppler-cpp-dev: https://poppler.freedesktop.org/
+.. _optipng: http://optipng.sourceforge.net/
 
 Notably, you should confirm how you access your Python3 installation.  Many
-Linux distributions will install Python3 in parallel to Python2, using the names
-``python3`` and ``python`` respectively.  The same goes for ``pip3`` and
-``pip``.  Running Paperless with Python2 will likely break things, so make sure that 
-you're using the right version.
+Linux distributions will install Python3 in parallel to Python2, using the
+names ``python3`` and ``python`` respectively.  The same goes for ``pip3`` and
+``pip``.  Running Paperless with Python2 will likely break things, so make sure
+that you're using the right version.
 
 For the purposes of simplicity, ``python`` and ``pip`` is used everywhere to
 refer to their Python3 versions.
 
 In addition to the above, there are a number of Python requirements, all of
-which are listed in a file called ``requirements.txt`` in the project root directory.
+which are listed in a file called ``requirements.txt`` in the project root
+directory.
 
-If you're not working on a virtual environment (like Vagrant or Docker), you
+If you're not working on a virtual environment (like Docker), you
 should probably be using a virtualenv, but that's your call.  The reasons why
 you might choose a virtualenv or not aren't really within the scope of this
 document.  Needless to say if you don't know what a virtualenv is, you should
@@ -39,14 +44,15 @@ probably figure that out before continuing.
 
 .. _requirements-apple:
 
-Apple-tastic Complications
---------------------------
+Problems with Imagemagick & PDFs
+--------------------------------
 
-Some users have `run into problems`_ with installing ImageMagick on Apple
-systems using HomeBrew.  The solution appears to be to install ghostscript as
-well as ImageMagick:
+Some users have `run into problems`_ with getting ImageMagick to do its thing
+with PDFs.  Often this is the case with Apple systems using HomeBrew, but other
+Linuxes have been a problem as well.  The solution appears to be to install
+ghostscript as well as ImageMagick:
 
-.. _run into problems: https://github.com/danielquinn/paperless/issues/25
+.. _run into problems: https://github.com/the-paperless-project/paperless/issues/25
 
 .. code:: bash
 
@@ -86,7 +92,7 @@ enter it, and install the requirements using the ``requirements.txt`` file:
     $ . /path/to/arbitrary/directory/bin/activate
     $ pip install  --requirement /path/to/paperless/requirements.txt
 
-Now you're ready to go.  Just remember to enter (activate) your virtualenv 
+Now you're ready to go.  Just remember to enter (activate) your virtualenv
 whenever you want to use Paperless.
 
 

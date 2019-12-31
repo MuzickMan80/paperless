@@ -7,11 +7,13 @@ from multiprocessing.pool import Pool
 import langdetect
 import pyocr
 from django.conf import settings
-from documents.parsers import DocumentParser, ParseError
 from PIL import Image
 from pyocr.libtesseract.tesseract_raw import \
     TesseractError as OtherTesseractError
 from pyocr.tesseract import TesseractError
+
+import pdftotext
+from documents.parsers import DocumentParser, ParseError
 
 from .languages import ISO639
 
@@ -27,32 +29,86 @@ class RasterisedDocumentParser(DocumentParser):
     """
 
     CONVERT = settings.CONVERT_BINARY
+    GHOSTSCRIPT = settings.GS_BINARY
     DENSITY = settings.CONVERT_DENSITY if settings.CONVERT_DENSITY else 300
     THREADS = int(settings.OCR_THREADS) if settings.OCR_THREADS else None
     UNPAPER = settings.UNPAPER_BINARY
     DEFAULT_OCR_LANGUAGE = settings.OCR_LANGUAGE
+    OCR_ALWAYS = settings.OCR_ALWAYS
+
+    def __init__(self, path):
+        super().__init__(path)
+        self._text = None
 
     def get_thumbnail(self):
         """
         The thumbnail of a PDF is just a 500px wide image of the first page.
         """
 
-        run_convert(
-            self.CONVERT,
-            "-scale", "500x5000",
-            "-alpha", "remove",
-            self.document_path, os.path.join(self.tempdir, "convert-%04d.png")
-        )
+        out_path = os.path.join(self.tempdir, "convert.png")
 
-        return os.path.join(self.tempdir, "convert-0000.png")
+        # Run convert to get a decent thumbnail
+        try:
+            run_convert(
+                self.CONVERT,
+                "-scale", "500x5000",
+                "-alpha", "remove",
+                "-strip", "-trim",
+                "{}[0]".format(self.document_path),
+                out_path
+            )
+        except ParseError:
+            # if convert fails, fall back to extracting
+            # the first PDF page as a PNG using Ghostscript
+            self.log(
+                "warning",
+                "Thumbnail generation with ImageMagick failed, "
+                "falling back to Ghostscript."
+            )
+            gs_out_path = os.path.join(self.tempdir, "gs_out.png")
+            cmd = [self.GHOSTSCRIPT,
+                   "-q",
+                   "-sDEVICE=pngalpha",
+                   "-o", gs_out_path,
+                   self.document_path]
+            if not subprocess.Popen(cmd).wait() == 0:
+                raise ParseError("Thumbnail (gs) failed at {}".format(cmd))
+            # then run convert on the output from gs
+            run_convert(
+                self.CONVERT,
+                "-scale", "500x5000",
+                "-alpha", "remove",
+                "-strip", "-trim",
+                gs_out_path,
+                out_path
+            )
+
+        return out_path
+
+    def _is_ocred(self):
+
+        # Extract text from PDF using pdftotext
+        text = get_text_from_pdf(self.document_path)
+
+        # We assume, that a PDF with at least 50 characters contains text
+        # (so no OCR required)
+        return len(text) > 50
 
     def get_text(self):
+
+        if self._text is not None:
+            return self._text
+
+        if not self.OCR_ALWAYS and self._is_ocred():
+            self.log("info", "Skipping OCR, using Text from PDF")
+            self._text = get_text_from_pdf(self.document_path)
+            return self._text
 
         images = self._get_greyscale()
 
         try:
-
-            return self._get_ocr(images)
+            self._text = self._get_ocr(images)
+            return self._text
         except OCRError as e:
             raise ParseError(e)
 
@@ -125,7 +181,10 @@ class RasterisedDocumentParser(DocumentParser):
                 )
                 raw_text = self._assemble_ocr_sections(imgs, middle, raw_text)
                 return raw_text
-            raise OCRError("Language detection failed")
+            error_msg = ("Language detection failed. Set "
+                         "PAPERLESS_FORGIVING_OCR in config file to continue "
+                         "anyway.")
+            raise OCRError(error_msg)
 
         if ISO639[guessed_language] == self.DEFAULT_OCR_LANGUAGE:
             raw_text = self._assemble_ocr_sections(imgs, middle, raw_text)
@@ -145,8 +204,8 @@ class RasterisedDocumentParser(DocumentParser):
                 raw_text = self._assemble_ocr_sections(imgs, middle, raw_text)
                 return raw_text
             raise OCRError(
-                "The guessed language is not available in this instance of "
-                "Tesseract."
+                "The guessed language ({}) is not available in this instance "
+                "of Tesseract.".format(guessed_language)
             )
 
     def _ocr(self, imgs, lang):
@@ -184,20 +243,24 @@ def run_convert(*args):
     if settings.CONVERT_TMPDIR:
         environment["MAGICK_TMPDIR"] = settings.CONVERT_TMPDIR
 
-    subprocess.Popen(args, env=environment).wait()
+    if not subprocess.Popen(args, env=environment).wait() == 0:
+        raise ParseError("Convert failed at {}".format(args))
 
 
 def run_unpaper(args):
     unpaper, pnm = args
-    subprocess.Popen(
-        (unpaper, pnm, pnm.replace(".pnm", ".unpaper.pnm"))).wait()
+    command_args = (unpaper, "--overwrite", pnm,
+                    pnm.replace(".pnm", ".unpaper.pnm"))
+    if not subprocess.Popen(command_args).wait() == 0:
+        raise ParseError("Unpaper failed at {}".format(command_args))
 
 
 def strip_excess_whitespace(text):
     collapsed_spaces = re.sub(r"([^\S\r\n]+)", " ", text)
     no_leading_whitespace = re.sub(
-        "([\n\r]+)([^\S\n\r]+)", '\\1', collapsed_spaces)
-    no_trailing_whitespace = re.sub("([^\S\n\r]+)$", '', no_leading_whitespace)
+        r"([\n\r]+)([^\S\n\r]+)", '\\1', collapsed_spaces)
+    no_trailing_whitespace = re.sub(
+        r"([^\S\n\r]+)$", '', no_leading_whitespace)
     return no_trailing_whitespace
 
 
@@ -209,6 +272,17 @@ def image_to_string(args):
             try:
                 orientation = ocr.detect_orientation(f, lang=lang)
                 f = f.rotate(orientation["angle"], expand=1)
-            except (TesseractError, OtherTesseractError):
+            except (TesseractError, OtherTesseractError, AttributeError):
                 pass
         return ocr.image_to_string(f, lang=lang)
+
+
+def get_text_from_pdf(pdf_file):
+
+    with open(pdf_file, "rb") as f:
+        try:
+            pdf = pdftotext.PDF(f)
+        except pdftotext.Error:
+            return ""
+
+    return "\n".join(pdf)

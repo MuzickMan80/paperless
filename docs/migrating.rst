@@ -16,7 +16,7 @@ Backing Up
 ----------
 
 So you're bored of this whole project, or you want to make a remote backup of
-the unencrypted files for whatever reason.  This is easy to do, simply use the
+your files for whatever reason.  This is easy to do, simply use the
 :ref:`exporter <utilities-exporter>` to dump your documents and database out
 into an arbitrary directory.
 
@@ -82,6 +82,7 @@ rolled in as part of the update:
 
     $ cd /path/to/project
     $ git pull
+    $ pip install -r requirements.txt
     $ cd src
     $ ./manage.py migrate
 
@@ -94,15 +95,15 @@ You may want to take a look at the ``paperless.conf.example`` file to see if
 there's anything new in there compared to what you've got int ``/etc``.
 
 If you are :ref:`using Docker <setup-installation-docker>` the update process
-requires only one additional step:
+is similar:
 
 .. code-block:: shell-session
 
     $ cd /path/to/project
     $ git pull
     $ docker build -t paperless .
+    $ docker-compose run --rm consumer migrate
     $ docker-compose up -d
-    $ docker-compose run --rm webserver migrate
 
 If ``git pull`` doesn't report any changes, there is no need to continue with
 the remaining steps.

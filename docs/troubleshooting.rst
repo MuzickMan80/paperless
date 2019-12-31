@@ -14,9 +14,8 @@ FORGIVING_OCR is enabled``, then you might need to install the
 `Tesseract language files <http://packages.ubuntu.com/search?keywords=tesseract-ocr>`_
 marching your document's languages.
 
-As an example, if you are running Paperless from the Vagrant setup provided
-(or from any Ubuntu or Debian box), and your documents are written in Spanish
-you may need to run::
+As an example, if you are running Paperless from any Ubuntu or Debian
+box, and your documents are written in Spanish you may need to run::
 
     apt-get install -y tesseract-ocr-spa
 
@@ -73,4 +72,4 @@ with a DPI of 300, then merging the images into the single PDF with
 For more information on this and situations like it, you should take a look
 at `Issue #118`_ as that's where this tip originated.
 
-.. _Issue #118: https://github.com/danielquinn/paperless/issues/118
+.. _Issue #118: https://github.com/the-paperless-project/paperless/issues/118

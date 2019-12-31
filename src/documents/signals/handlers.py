@@ -3,6 +3,10 @@ import os
 from subprocess import Popen
 
 from django.conf import settings
+from django.contrib.admin.models import ADDITION, LogEntry
+from django.contrib.auth.models import User
+from django.contrib.contenttypes.models import ContentType
+from django.utils import timezone
 
 from ..models import Correspondent, Document, Tag
 
@@ -93,3 +97,18 @@ def cleanup_document_deletion(sender, instance, using, **kwargs):
             os.unlink(f)
         except FileNotFoundError:
             pass  # The file's already gone, so we're cool with it.
+
+
+def set_log_entry(sender, document=None, logging_group=None, **kwargs):
+
+    ct = ContentType.objects.get(model="document")
+    user = User.objects.get(username="consumer")
+
+    LogEntry.objects.create(
+        action_flag=ADDITION,
+        action_time=timezone.now(),
+        content_type=ct,
+        object_id=document.id,
+        user=user,
+        object_repr=document.__str__(),
+    )

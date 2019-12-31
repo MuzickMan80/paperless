@@ -1,21 +1,25 @@
 # coding=utf-8
 
-import dateutil.parser
 import logging
 import os
 import re
 import uuid
-
 from collections import OrderedDict
-from fuzzywuzzy import fuzz
 
+import dateutil.parser
 from django.conf import settings
-from django.core.urlresolvers import reverse
 from django.db import models
 from django.template.defaultfilters import slugify
 from django.utils import timezone
+from django.utils.text import slugify
+from fuzzywuzzy import fuzz
 
 from .managers import LogManager
+
+try:
+    from django.core.urlresolvers import reverse
+except ImportError:
+    from django.urls import reverse
 
 
 class MatchingModel(models.Model):
@@ -34,7 +38,7 @@ class MatchingModel(models.Model):
     )
 
     name = models.CharField(max_length=128, unique=True)
-    slug = models.SlugField(blank=True)
+    slug = models.SlugField(blank=True, editable=False)
 
     match = models.CharField(max_length=256, blank=True)
     matching_algorithm = models.PositiveIntegerField(
@@ -57,8 +61,9 @@ class MatchingModel(models.Model):
 
     is_insensitive = models.BooleanField(default=True)
 
-    class Meta(object):
+    class Meta:
         abstract = True
+        ordering = ("name",)
 
     def __str__(self):
         return self.name
@@ -131,19 +136,19 @@ class MatchingModel(models.Model):
         Example:
           '  some random  words "with   quotes  " and   spaces'
             ==>
-          ["some", "random", "words", "with\s+quotes", "and", "spaces"]
+          ["some", "random", "words", "with+quotes", "and", "spaces"]
         """
         findterms = re.compile(r'"([^"]+)"|(\S+)').findall
         normspace = re.compile(r"\s+").sub
-        return [normspace(r"\s+", (t[0] or t[1]).strip())
-                for t in findterms(self.match)]
+        return [
+            normspace(" ", (t[0] or t[1]).strip()).replace(" ", r"\s+")
+            for t in findterms(self.match)
+        ]
 
     def save(self, *args, **kwargs):
 
         self.match = self.match.lower()
-
-        if not self.slug:
-            self.slug = slugify(self.name)
+        self.slug = slugify(self.name)
 
         models.Model.save(self, *args, **kwargs)
 
@@ -154,7 +159,7 @@ class Correspondent(MatchingModel):
     # better safe than sorry.
     SAFE_REGEX = re.compile(r"^[\w\- ,.']+$")
 
-    class Meta(object):
+    class Meta:
         ordering = ("name",)
 
 
@@ -186,7 +191,18 @@ class Document(models.Model):
     TYPE_JPG = "jpg"
     TYPE_GIF = "gif"
     TYPE_TIF = "tiff"
-    TYPES = (TYPE_PDF, TYPE_PNG, TYPE_JPG, TYPE_GIF, TYPE_TIF,)
+    TYPE_TXT = "txt"
+    TYPE_CSV = "csv"
+    TYPE_MD = "md"
+    TYPES = (TYPE_PDF, TYPE_PNG, TYPE_JPG, TYPE_GIF, TYPE_TIF,
+             TYPE_TXT, TYPE_CSV, TYPE_MD)
+
+    STORAGE_TYPE_UNENCRYPTED = "unencrypted"
+    STORAGE_TYPE_GPG = "gpg"
+    STORAGE_TYPES = (
+        (STORAGE_TYPE_UNENCRYPTED, "Unencrypted"),
+        (STORAGE_TYPE_GPG, "Encrypted with GNU Privacy Guard")
+    )
 
     correspondent = models.ForeignKey(
         Correspondent,
@@ -228,7 +244,17 @@ class Document(models.Model):
     modified = models.DateTimeField(
         auto_now=True, editable=False, db_index=True)
 
-    class Meta(object):
+    storage_type = models.CharField(
+        max_length=11,
+        choices=STORAGE_TYPES,
+        default=STORAGE_TYPE_UNENCRYPTED,
+        editable=False
+    )
+
+    added = models.DateTimeField(
+        default=timezone.now, editable=False, db_index=True)
+
+    class Meta:
         ordering = ("correspondent", "title")
 
     def __str__(self):
@@ -242,11 +268,16 @@ class Document(models.Model):
 
     @property
     def source_path(self):
+
+        file_name = "{:07}.{}".format(self.pk, self.file_type)
+        if self.storage_type == self.STORAGE_TYPE_GPG:
+            file_name += ".gpg"
+
         return os.path.join(
             settings.MEDIA_ROOT,
             "documents",
             "originals",
-            "{:07}.{}.gpg".format(self.pk, self.file_type)
+            file_name
         )
 
     @property
@@ -263,11 +294,16 @@ class Document(models.Model):
 
     @property
     def thumbnail_path(self):
+
+        file_name = "{:07}.png".format(self.pk)
+        if self.storage_type == self.STORAGE_TYPE_GPG:
+            file_name += ".gpg"
+
         return os.path.join(
             settings.MEDIA_ROOT,
             "documents",
             "thumbnails",
-            "{:07}.png.gpg".format(self.pk)
+            file_name
         )
 
     @property
@@ -297,7 +333,7 @@ class Log(models.Model):
 
     objects = LogManager()
 
-    class Meta(object):
+    class Meta:
         ordering = ("-modified",)
 
     def __str__(self):
@@ -317,7 +353,7 @@ class Log(models.Model):
         models.Model.save(self, *args, **kwargs)
 
 
-class FileInfo(object):
+class FileInfo:
 
     # This epic regex *almost* worked for our needs, so I'm keeping it here for
     # posterity, in the hopes that we might find a way to make it work one day.
@@ -332,51 +368,52 @@ class FileInfo(object):
         )
     )
 
+    formats = "pdf|jpe?g|png|gif|tiff?|te?xt|md|csv"
     REGEXES = OrderedDict([
         ("created-correspondent-title-tags", re.compile(
             r"^(?P<created>\d\d\d\d\d\d\d\d(\d\d\d\d\d\d)?Z) - "
             r"(?P<correspondent>.*) - "
             r"(?P<title>.*) - "
             r"(?P<tags>[a-z0-9\-,]*)"
-            r"\.(?P<extension>pdf|jpe?g|png|gif|tiff?)$",
+            r"\.(?P<extension>{})$".format(formats),
             flags=re.IGNORECASE
         )),
         ("created-title-tags", re.compile(
             r"^(?P<created>\d\d\d\d\d\d\d\d(\d\d\d\d\d\d)?Z) - "
             r"(?P<title>.*) - "
             r"(?P<tags>[a-z0-9\-,]*)"
-            r"\.(?P<extension>pdf|jpe?g|png|gif|tiff?)$",
+            r"\.(?P<extension>{})$".format(formats),
             flags=re.IGNORECASE
         )),
         ("created-correspondent-title", re.compile(
             r"^(?P<created>\d\d\d\d\d\d\d\d(\d\d\d\d\d\d)?Z) - "
             r"(?P<correspondent>.*) - "
             r"(?P<title>.*)"
-            r"\.(?P<extension>pdf|jpe?g|png|gif|tiff?)$",
+            r"\.(?P<extension>{})$".format(formats),
             flags=re.IGNORECASE
         )),
         ("created-title", re.compile(
             r"^(?P<created>\d\d\d\d\d\d\d\d(\d\d\d\d\d\d)?Z) - "
             r"(?P<title>.*)"
-            r"\.(?P<extension>pdf|jpe?g|png|gif|tiff?)$",
+            r"\.(?P<extension>{})$".format(formats),
             flags=re.IGNORECASE
         )),
         ("correspondent-title-tags", re.compile(
             r"(?P<correspondent>.*) - "
             r"(?P<title>.*) - "
             r"(?P<tags>[a-z0-9\-,]*)"
-            r"\.(?P<extension>pdf|jpe?g|png|gif|tiff?)$",
+            r"\.(?P<extension>{})$".format(formats),
             flags=re.IGNORECASE
         )),
         ("correspondent-title", re.compile(
             r"(?P<correspondent>.*) - "
             r"(?P<title>.*)?"
-            r"\.(?P<extension>pdf|jpe?g|png|gif|tiff?)$",
+            r"\.(?P<extension>{})$".format(formats),
             flags=re.IGNORECASE
         )),
         ("title", re.compile(
             r"(?P<title>.*)"
-            r"\.(?P<extension>pdf|jpe?g|png|gif|tiff?)$",
+            r"\.(?P<extension>{})$".format(formats),
             flags=re.IGNORECASE
         ))
     ])
@@ -392,7 +429,10 @@ class FileInfo(object):
 
     @classmethod
     def _get_created(cls, created):
-        return dateutil.parser.parse("{:0<14}Z".format(created[:-1]))
+        try:
+            return dateutil.parser.parse("{:0<14}Z".format(created[:-1]))
+        except ValueError:
+            return None
 
     @classmethod
     def _get_correspondent(cls, name):
@@ -410,8 +450,10 @@ class FileInfo(object):
     def _get_tags(cls, tags):
         r = []
         for t in tags.split(","):
-            r.append(
-                Tag.objects.get_or_create(slug=t, defaults={"name": t})[0])
+            r.append(Tag.objects.get_or_create(
+                slug=slugify(t),
+                defaults={"name": t}
+            )[0])
         return tuple(r)
 
     @classmethod
@@ -441,8 +483,18 @@ class FileInfo(object):
           "<title>.<suffix>"
         """
 
+        filename = os.path.basename(path)
+
+        # Mutate filename in-place before parsing its components
+        # by applying at most one of the configured transformations.
+        for (pattern, repl) in settings.FILENAME_PARSE_TRANSFORMS:
+            (filename, count) = pattern.subn(repl, filename)
+            if count:
+                break
+
+        # Parse filename components.
         for regex in cls.REGEXES.values():
-            m = regex.match(os.path.basename(path))
+            m = regex.match(filename)
             if m:
                 properties = m.groupdict()
                 cls._mangle_property(properties, "created")

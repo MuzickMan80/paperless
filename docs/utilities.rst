@@ -33,8 +33,11 @@ The webserver is started via the ``manage.py`` script:
 By default, the server runs on localhost, port 8000, but you can change this
 with a few arguments, run ``manage.py --help`` for more information.
 
-Note that this command runs continuously, so exiting it will mean your webserver
-disappears.  If you want to run this full-time (which is kind of the point)
+Add the option ``--noreload`` to reduce resource usage. Otherwise, the server
+continuously polls all source files for changes to auto-reload them.
+
+Note that when exiting this command your webserver will disappear.
+If you want to run this full-time (which is kind of the point)
 you'll need to have it start in the background -- something you'll need to
 figure out for your own system.  To get you started though, there are Systemd
 service files in the ``scripts`` directory.
@@ -46,17 +49,18 @@ The Consumer
 ------------
 
 The consumer script runs in an infinite loop, constantly looking at a directory
-for PDF files to parse and index.  The process is pretty straightforward:
+for documents to parse and index.  The process is pretty straightforward:
 
-1. Look in ``CONSUMPTION_DIR`` for a PDF.  If one is found, go to #2.  If not,
-   wait 10 seconds and try again.
-2. Parse the PDF with Tesseract
+1. Look in ``CONSUMPTION_DIR`` for a document.  If one is found, go to #2.
+   If not, wait 10 seconds and try again.  On Linux, new documents are detected
+   instantly via inotify, so there's no waiting involved.
+2. Parse the document with Tesseract
 3. Create a new record in the database with the OCR'd text
 4. Attempt to automatically assign document attributes by doing some guesswork.
    Read up on the :ref:`guesswork documentation<guesswork>` for more
    information about this process.
-5. Encrypt the PDF and store it in the ``media`` directory under
-   ``documents/pdf``.
+5. Encrypt the document (if you have a passphrase set) and store it in the
+   ``media`` directory under ``documents/originals``.
 6. Go to #1.
 
 
@@ -71,8 +75,8 @@ The consumer is started via the ``manage.py`` script:
 
     $ /path/to/paperless/src/manage.py document_consumer
 
-This starts the service that will run in a loop, consuming PDF files as they
-appear in ``CONSUMPTION_DIR``.
+This starts the service that will consume documents as they appear in
+``CONSUMPTION_DIR``.
 
 Note that this command runs continuously, so exiting it will mean your webserver
 disappears.  If you want to run this full-time (which is kind of the point)
@@ -80,6 +84,13 @@ you'll need to have it start in the background -- something you'll need to
 figure out for your own system.  To get you started though, there are Systemd
 service files in the ``scripts`` directory.
 
+Some command line arguments are available to customize the behavior of the
+consumer. By default it will use ``/etc/paperless.conf`` values. Display the
+help with:
+
+.. code-block:: shell-session
+
+    $ /path/to/paperless/src/manage.py document_consumer --help
 
 .. _utilities-exporter:
 
@@ -87,8 +98,8 @@ The Exporter
 ------------
 
 Tired of fiddling with Paperless, or just want to do something stupid and are
-afraid of accidentally damaging your files?  You can export all of your PDFs
-into neatly named, dated, and unencrypted.
+afraid of accidentally damaging your files?  You can export all of your
+documents into neatly named, dated, and unencrypted files.
 
 
 .. _utilities-exporter-howto:
@@ -102,10 +113,10 @@ This too is done via the ``manage.py`` script:
 
     $ /path/to/paperless/src/manage.py document_exporter /path/to/somewhere/
 
-This will dump all of your unencrypted PDFs into ``/path/to/somewhere`` for you
-to do with as you please.  The files are accompanied with a special file,
-``manifest.json`` which can be used to
-:ref:`import the files <utilities-importer>` at a later date if you wish.
+This will dump all of your unencrypted documents into ``/path/to/somewhere``
+for you to do with as you please.  The files are accompanied with a special
+file, ``manifest.json`` which can be used to :ref:`import the files
+<utilities-importer>` at a later date if you wish.
 
 
 .. _utilities-exporter-howto-docker:
@@ -182,18 +193,19 @@ instructions above to do the import.
 
 .. _utilities-retagger:
 
-The Re-tagger
--------------
+Re-running your tagging and correspondent matchers
+--------------------------------------------------
 
-Say you've imported a few hundred documents and now want to introduce a tag
-and apply its matching to all of the currently-imported docs.  This problem is
-common enough that there's a tool for it.
+Say you've imported a few hundred documents and now want to introduce
+a tag or set up a new correspondent, and apply its matching to all of
+the currently-imported docs.  This problem is common enough that
+there are tools for it.
 
 
 .. _utilities-retagger-howto:
 
-How to Use It
-.............
+How to Do It
+............
 
 This too is done via the ``manage.py`` script:
 
@@ -201,7 +213,72 @@ This too is done via the ``manage.py`` script:
 
     $ /path/to/paperless/src/manage.py document_retagger
 
-That's it.  It'll loop over all of the documents in your database and attempt
-to match all of your tags to them.  If one matches, it'll be applied.  And
-don't worry, you can run this as often as you like, it' won't double-tag
-a document.
+Run this after changing or adding tagging rules.  It'll loop over all
+of the documents in your database and attempt to match all of your
+tags to them.  If one matches, it'll be applied.  And don't worry, you
+can run this as often as you like, it won't double-tag a document.
+
+.. code:: bash
+
+    $ /path/to/paperless/src/manage.py document_correspondents
+
+This is the similar command to run after adding or changing a correspondent.
+
+.. _utilities-encyption:
+
+Enabling Encrpytion
+-------------------
+
+Let's say you've imported a few documents to play around with paperless and now
+you are using it more seriously and want to enable encryption of your files.
+
+.. utilities-encryption-howto:
+
+Basic Syntax
+.............
+
+Again we'll use the ``manage.py`` script, passing ``change_storage_type``:
+
+.. code:: bash
+
+    $ /path/to/paperless/src/manage.py change_storage_type --help
+		usage: manage.py change_storage_type [-h] [--version] [-v {0,1,2,3}]
+                                     [--settings SETTINGS]
+                                     [--pythonpath PYTHONPATH] [--traceback]
+                                     [--no-color] [--passphrase PASSPHRASE]
+                                     {gpg,unencrypted} {gpg,unencrypted}
+
+    This is how you migrate your stored documents from an encrypted state to an
+    unencrypted one (or vice-versa)
+
+    positional arguments:
+      {gpg,unencrypted}     The state you want to change your documents from
+      {gpg,unencrypted}     The state you want to change your documents to
+
+    optional arguments:
+      --passphrase PASSPHRASE
+                            If PAPERLESS_PASSPHRASE isn't set already, you need to
+                            specify it here
+
+Enabling Encryption
+...................
+
+Basic usage to enable encryption of your document store (**USE A MORE SECURE PASSPHRASE**):
+
+(Note: If ``PAPERLESS_PASSPHRASE`` isn't set already, you need to specify it here)
+
+.. code:: bash
+
+    $ /path/to/paperless/src/manage.py change_storage_type [--passphrase SECR3TP4SSPHRA$E] unencrypted gpg
+
+
+Disabling Encryption
+....................
+
+Basic usage to enable encryption of your document store:
+
+(Note: Again, if ``PAPERLESS_PASSPHRASE`` isn't set already, you need to specify it here)
+
+.. code:: bash
+
+    $ /path/to/paperless/src/manage.py change_storage_type [--passphrase SECR3TP4SSPHRA$E] gpg unencrypted
